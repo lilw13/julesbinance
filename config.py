@@ -19,3 +19,7 @@ RATE_LIMITING_DELAY = 2  # Delay in seconds between each check
 # Trading fees
 MAKER_FEE = 0.001  # 0.1%
 TAKER_FEE = 0.001  # 0.1%
+
+# Telegram
+TELEGRAM_BOT_TOKEN = ""
+TELEGRAM_CHAT_ID = ""

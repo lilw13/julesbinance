@@ -6,6 +6,7 @@ import logging
 from binance_sdk_spot.spot import Spot, ConfigurationRestAPI, SPOT_REST_API_PROD_URL
 from dotenv import load_dotenv
 import config
+import telegram
 
 # Load environment variables from .env file
 load_dotenv()
@@ -59,6 +60,17 @@ def get_price(client, symbol):
         logging.error(f"Error getting price for {symbol}: {e}")
         return None
 
+def get_order_book_depth(client, symbol, limit=5):
+    """
+    Get the order book depth for a symbol.
+    """
+    try:
+        response = client.market_data.get_order_book(symbol=symbol, limit=limit)
+        return response.data
+    except Exception as e:
+        logging.error(f"Error getting order book for {symbol}: {e}")
+        return None
+
 def check_arbitrage_opportunity(client):
     """
     Check for triangular arbitrage opportunities.
@@ -70,6 +82,24 @@ def check_arbitrage_opportunity(client):
         price_usdt_fdusd = get_price(client, f"{config.THIRD_CURRENCY}{config.BASE_CURRENCY}")
 
         if price_btc_fdusd and price_btc_usdt and price_usdt_fdusd:
+            # Check order book depth
+            order_book_btc_fdusd = get_order_book_depth(client, f"{config.INTERMEDIATE_CURRENCY}{config.BASE_CURRENCY}")
+            order_book_btc_usdt = get_order_book_depth(client, f"{config.INTERMEDIATE_CURRENCY}{config.THIRD_CURRENCY}")
+            order_book_usdt_fdusd = get_order_book_depth(client, f"{config.THIRD_CURRENCY}{config.BASE_CURRENCY}")
+
+            if not order_book_btc_fdusd or not order_book_btc_usdt or not order_book_usdt_fdusd:
+                return
+
+            # Get the best bid and ask prices
+            best_ask_btc_fdusd = float(order_book_btc_fdusd.asks[0][0])
+            best_bid_btc_usdt = float(order_book_btc_usdt.bids[0][0])
+            best_bid_usdt_fdusd = float(order_book_usdt_fdusd.bids[0][0])
+
+            # Calculate the effective prices
+            price_btc_fdusd = best_ask_btc_fdusd
+            price_btc_usdt = best_bid_btc_usdt
+            price_usdt_fdusd = best_bid_usdt_fdusd
+
             # Trade amount in BTC
             amount_btc = config.TRADE_AMOUNT / price_btc_fdusd
             # Trade amount in USDT
@@ -84,7 +114,9 @@ def check_arbitrage_opportunity(client):
             logging.info(f"Path 1: FDUSD -> BTC -> USDT -> FDUSD | Profit/Loss: {profit_loss:.2f} {config.BASE_CURRENCY} ({profit_loss_percent:.4f}%)")
 
             if profit_loss_percent > config.MIN_PROFIT_THRESHOLD:
-                logging.info(f"Arbitrage opportunity found! Profit: {profit_loss_percent:.4f}%")
+                message = f"Arbitrage opportunity found!\nPath 1: FDUSD -> BTC -> USDT -> FDUSD\nProfit: {profit_loss_percent:.4f}%"
+                logging.info(message)
+                telegram.send_telegram_message(message)
                 execute_trade(client, "PATH_1", price_btc_fdusd, price_btc_usdt, price_usdt_fdusd)
     except Exception as e:
         logging.error(f"Error in Path 1 calculation: {e}")
@@ -97,6 +129,24 @@ def check_arbitrage_opportunity(client):
         price_btc_fdusd = get_price(client, f"{config.INTERMEDIATE_CURRENCY}{config.BASE_CURRENCY}")
 
         if price_usdt_fdusd and price_btc_usdt and price_btc_fdusd:
+            # Check order book depth
+            order_book_usdt_fdusd = get_order_book_depth(client, f"{config.THIRD_CURRENCY}{config.BASE_CURRENCY}")
+            order_book_btc_usdt = get_order_book_depth(client, f"{config.INTERMEDIATE_CURRENCY}{config.THIRD_CURRENCY}")
+            order_book_btc_fdusd = get_order_book_depth(client, f"{config.INTERMEDIATE_CURRENCY}{config.BASE_CURRENCY}")
+
+            if not order_book_usdt_fdusd or not order_book_btc_usdt or not order_book_btc_fdusd:
+                return
+
+            # Get the best bid and ask prices
+            best_ask_usdt_fdusd = float(order_book_usdt_fdusd.asks[0][0])
+            best_ask_btc_usdt = float(order_book_btc_usdt.asks[0][0])
+            best_bid_btc_fdusd = float(order_book_btc_fdusd.bids[0][0])
+
+            # Calculate the effective prices
+            price_usdt_fdusd = best_ask_usdt_fdusd
+            price_btc_usdt = best_ask_btc_usdt
+            price_btc_fdusd = best_bid_btc_fdusd
+
             # Trade amount in USDT
             amount_usdt = config.TRADE_AMOUNT / price_usdt_fdusd
             # Trade amount in BTC
@@ -111,7 +161,9 @@ def check_arbitrage_opportunity(client):
             logging.info(f"Path 2: FDUSD -> USDT -> BTC -> FDUSD | Profit/Loss: {profit_loss:.2f} {config.BASE_CURRENCY} ({profit_loss_percent:.4f}%)")
 
             if profit_loss_percent > config.MIN_PROFIT_THRESHOLD:
-                logging.info(f"Arbitrage opportunity found! Profit: {profit_loss_percent:.4f}%")
+                message = f"Arbitrage opportunity found!\nPath 2: FDUSD -> USDT -> BTC -> FDUSD\nProfit: {profit_loss_percent:.4f}%"
+                logging.info(message)
+                telegram.send_telegram_message(message)
                 execute_trade(client, "PATH_2", price_usdt_fdusd, price_btc_usdt, price_btc_fdusd)
     except Exception as e:
         logging.error(f"Error in Path 2 calculation: {e}")
@@ -139,7 +191,7 @@ def execute_trade(client, path, price1, price2, price3):
 
         if path == "PATH_1":
             # FDUSD -> BTC
-            order1_response = client.trade.new_order(symbol=f"{config.INTERMEDIATE_CURRENCY}{config.BASE_CURRENCY}", side="BUY", type="MARKET", quantity=config.TRADE_AMOUNT / price1)
+            order1_response = client.trade.new_order(symbol=f"{config.INTERMEDIATE_CURRENCY}{config.BASE_CURRENCY}", side="BUY", type="MARKET", quote_order_qty=config.TRADE_AMOUNT)
             order1 = order1_response.data
             logging.info(f"Order 1 executed: {order1}")
             # BTC -> USDT
@@ -147,16 +199,16 @@ def execute_trade(client, path, price1, price2, price3):
             order2 = order2_response.data
             logging.info(f"Order 2 executed: {order2}")
             # USDT -> FDUSD
-            order3_response = client.trade.new_order(symbol=f"{config.THIRD_CURRENCY}{config.BASE_CURRENCY}", side="BUY", type="MARKET", quantity=float(order2.cummulative_quote_qty))
+            order3_response = client.trade.new_order(symbol=f"{config.THIRD_CURRENCY}{config.BASE_CURRENCY}", side="BUY", type="MARKET", quote_order_qty=float(order2.cummulative_quote_qty))
             order3 = order3_response.data
             logging.info(f"Order 3 executed: {order3}")
         elif path == "PATH_2":
             # FDUSD -> USDT
-            order1_response = client.trade.new_order(symbol=f"{config.THIRD_CURRENCY}{config.BASE_CURRENCY}", side="BUY", type="MARKET", quantity=config.TRADE_AMOUNT / price1)
+            order1_response = client.trade.new_order(symbol=f"{config.THIRD_CURRENCY}{config.BASE_CURRENCY}", side="BUY", type="MARKET", quote_order_qty=config.TRADE_AMOUNT)
             order1 = order1_response.data
             logging.info(f"Order 1 executed: {order1}")
             # USDT -> BTC
-            order2_response = client.trade.new_order(symbol=f"{config.INTERMEDIATE_CURRENCY}{config.THIRD_CURRENCY}", side="BUY", type="MARKET", quantity=float(order1.cummulative_quote_qty) / price2)
+            order2_response = client.trade.new_order(symbol=f"{config.INTERMEDIATE_CURRENCY}{config.THIRD_CURRENCY}", side="BUY", type="MARKET", quote_order_qty=float(order1.cummulative_quote_qty))
             order2 = order2_response.data
             logging.info(f"Order 2 executed: {order2}")
             # BTC -> FDUSD
@@ -169,7 +221,9 @@ def execute_trade(client, path, price1, price2, price3):
         balances = response.data.balances
         final_balance = next((b for b in balances if b.asset == config.BASE_CURRENCY), None)
         actual_profit = float(final_balance.free) - balance_fdusd
-        logging.info(f"Actual profit: {actual_profit:.2f} {config.BASE_CURRENCY}")
+        message = f"Trade executed successfully!\nActual profit: {actual_profit:.2f} {config.BASE_CURRENCY}"
+        logging.info(message)
+        telegram.send_telegram_message(message)
     except Exception as e:
         logging.error(f"Error executing trades: {e}")
         # Simple rollback mechanism
