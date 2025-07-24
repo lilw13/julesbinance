@@ -173,7 +173,9 @@ def execute_trade(client, path, price1, price2, price3):
     Execute the triangular arbitrage trades.
     """
     if config.DRY_RUN:
-        logging.info("Dry run mode is enabled. No real trades will be executed.")
+        message = "Dry run mode is enabled. No real trades will be executed."
+        logging.info(message)
+        telegram.send_telegram_message(message)
         return
 
     try:
